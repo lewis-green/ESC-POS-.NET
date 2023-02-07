@@ -1,9 +1,10 @@
 ﻿using Microsoft.Extensions.Logging;
-using SuperSimpleTcp;
 using System;
 using System.IO;
 using System.Threading.Tasks;
 using System.Reflection;
+using System.Threading;
+using System.Text.Json;
 
 namespace ESCPOS_NET
 {
@@ -23,11 +24,13 @@ namespace ESCPOS_NET
     }
     public class NetworkPrinter : BasePrinter
     {
+        private CancellationTokenSource _reconnectCancellationTokenSource;
         private readonly NetworkPrinterSettings _settings;
         private TCPConnection _tcpConnection;
 
         public NetworkPrinter(NetworkPrinterSettings settings) : base(settings.PrinterName)
         {
+            _reconnectCancellationTokenSource = new CancellationTokenSource();
             _settings = settings;
             if (settings.ConnectedHandler != null)
             {
@@ -55,14 +58,18 @@ namespace ESCPOS_NET
         }
         private void AttemptReconnectInfinitely()
         {
+            if(_reconnectCancellationTokenSource.Token.IsCancellationRequested)
+            {
+                return;
+            }
+
             try
             {
-                //_tcpConnection.ConnectWithRetries(300000);
-                _tcpConnection.ConnectWithRetries(3000);
+                _tcpConnection.ConnectWithRetries(30000);
             }
             catch
             {
-                //Logging.Logger?.LogWarning("[{Function}]:[{PrinterName}] Network printer unable to connect after 5 minutes. Attempting to reconnect. Settings: {Settings}", $"{this}.{MethodBase.GetCurrentMethod().Name}", PrinterName, JsonSerializer.Serialize(_settings));
+                Logging.Logger?.LogWarning("[{Function}]:[{PrinterName}] Network printer unable to connect after 5 minutes. Attempting to reconnect. Settings: {Settings}", $"{this}.{MethodBase.GetCurrentMethod().Name}", PrinterName, JsonSerializer.Serialize(_settings));
                 Task.Run(async () => { await Task.Delay(250); Connect(); });
             }
         }
@@ -85,12 +92,13 @@ namespace ESCPOS_NET
             Reader = new BinaryReader(_tcpConnection.ReadStream);
             Writer = new BinaryWriter(_tcpConnection.WriteStream);
 
-            Task.Run(() => { AttemptReconnectInfinitely(); });
+            Task.Run(AttemptReconnectInfinitely, _reconnectCancellationTokenSource.Token);
         }
 
         protected override void OverridableDispose()
         {
             _tcpConnection = null;
+            _reconnectCancellationTokenSource.Cancel();
         }
     }
 }
